@@ -10,11 +10,9 @@ Reference:
     [2] Wang R, Shivanna R, Cheng D Z, et al. DCN-M: Improved Deep & Cross Network for Feature Cross Learning in Web-scale Learning to Rank Systems[J]. 2020. (https://arxiv.org/abs/2008.13535)
 """
 import torch
-import torch.nn as nn
-
 from .basemodel import BaseModel
 from ..inputs import combined_dnn_input
-from ..layers import CrossNetMix, DNN
+from ..layers import CrossNetMix, DNN, create_linear
 
 
 class DCNMix(BaseModel):
@@ -49,7 +47,8 @@ class DCNMix(BaseModel):
                  dnn_activation='relu', dnn_use_bn=False, task='binary', device='cpu', gpus=None):
 
         super(DCNMix, self).__init__(linear_feature_columns=linear_feature_columns,
-                                     dnn_feature_columns=dnn_feature_columns, l2_reg_embedding=l2_reg_embedding,
+                                     dnn_feature_columns=dnn_feature_columns, l2_reg_linear=l2_reg_linear,
+                                     l2_reg_embedding=l2_reg_embedding,
                                      init_std=init_std, seed=seed, task=task, device=device, gpus=gpus)
         self.dnn_hidden_units = dnn_hidden_units
         self.cross_num = cross_num
@@ -63,14 +62,13 @@ class DCNMix(BaseModel):
         elif self.cross_num > 0:
             dnn_linear_in_feature = self.compute_input_dim(dnn_feature_columns)
 
-        self.dnn_linear = nn.Linear(dnn_linear_in_feature, 1, bias=False).to(
-            device)
+        self.dnn_linear = create_linear(
+            dnn_linear_in_feature, 1, bias=False, device=device)
         self.crossnet = CrossNetMix(in_features=self.compute_input_dim(dnn_feature_columns),
                                     low_rank=low_rank, num_experts=num_experts,
                                     layer_num=cross_num, device=device)
         self.add_regularization_weight(
             filter(lambda x: 'weight' in x[0] and 'bn' not in x[0], self.dnn.named_parameters()), l2=l2_reg_dnn)
-        self.add_regularization_weight(self.dnn_linear.weight, l2=l2_reg_linear)
         regularization_modules = [self.crossnet.U_list, self.crossnet.V_list, self.crossnet.C_list]
         for module in regularization_modules:
             self.add_regularization_weight(module, l2=l2_reg_cross)

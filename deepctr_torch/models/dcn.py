@@ -10,11 +10,9 @@ Reference:
     [2] Wang R, Shivanna R, Cheng D Z, et al. DCN-M: Improved Deep & Cross Network for Feature Cross Learning in Web-scale Learning to Rank Systems[J]. 2020. (https://arxiv.org/abs/2008.13535)
 """
 import torch
-import torch.nn as nn
-
 from .basemodel import BaseModel
 from ..inputs import combined_dnn_input
-from ..layers import CrossNet, DNN
+from ..layers import CrossNet, DNN, create_linear
 
 
 class DCN(BaseModel):
@@ -47,7 +45,8 @@ class DCN(BaseModel):
                  task='binary', device='cpu', gpus=None):
 
         super(DCN, self).__init__(linear_feature_columns=linear_feature_columns,
-                                  dnn_feature_columns=dnn_feature_columns, l2_reg_embedding=l2_reg_embedding,
+                                  dnn_feature_columns=dnn_feature_columns, l2_reg_linear=l2_reg_linear,
+                                  l2_reg_embedding=l2_reg_embedding,
                                   init_std=init_std, seed=seed, task=task, device=device, gpus=gpus)
         self.dnn_hidden_units = dnn_hidden_units
         self.cross_num = cross_num
@@ -61,13 +60,12 @@ class DCN(BaseModel):
         elif self.cross_num > 0:
             dnn_linear_in_feature = self.compute_input_dim(dnn_feature_columns)
 
-        self.dnn_linear = nn.Linear(dnn_linear_in_feature, 1, bias=False).to(
-            device)
+        self.dnn_linear = create_linear(
+            dnn_linear_in_feature, 1, bias=False, device=device)
         self.crossnet = CrossNet(in_features=self.compute_input_dim(dnn_feature_columns),
                                  layer_num=cross_num, parameterization=cross_parameterization, device=device)
         self.add_regularization_weight(
             filter(lambda x: 'weight' in x[0] and 'bn' not in x[0], self.dnn.named_parameters()), l2=l2_reg_dnn)
-        self.add_regularization_weight(self.dnn_linear.weight, l2=l2_reg_linear)
         self.add_regularization_weight(self.crossnet.kernels, l2=l2_reg_cross)
         self.to(device)
 

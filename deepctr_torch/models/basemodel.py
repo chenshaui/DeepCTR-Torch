@@ -129,6 +129,7 @@ class BaseModel(nn.Module):
         self._is_graph_network = True  # used for ModelCheckpoint in tf2
         self._ckpt_saved_epoch = False  # used for EarlyStopping in tf1.14
         self.history = History()
+        self.loss_reduction = "mean"
 
     def fit(self, x=None, y=None, batch_size=None, epochs=1, verbose=1, initial_epoch=0, validation_split=0.,
             validation_data=None, shuffle=True, callbacks=None):
@@ -248,18 +249,19 @@ class BaseModel(nn.Module):
                             assert len(loss_func) == num_tasks,\
                                 "the length of `loss_func` should be equal with `num_tasks`"
                             loss = sum(
-                                [loss_func[i](y_pred[:, i], y[:, i], reduction='sum') for i in range(num_tasks)])
+                                [loss_func[i](y_pred[:, i], y[:, i], reduction=self.loss_reduction) for i in range(num_tasks)])
                         else:
                             y_for_loss = y
                             if y_for_loss.ndim > 1 and y_for_loss.shape[-1] == 1:
                                 y_for_loss = y_for_loss.squeeze(-1)
-                            loss = loss_func(y_pred, y_for_loss, reduction='sum')
+                            loss = loss_func(y_pred, y_for_loss, reduction=self.loss_reduction)
                         reg_loss = self.get_regularization_loss()
 
                         total_loss = loss + reg_loss + self.aux_loss
 
-                        loss_epoch += loss.item()
-                        total_loss_epoch += total_loss.item()
+                        batch_weight = len(y) if self.loss_reduction == "mean" else 1
+                        loss_epoch += loss.item() * batch_weight
+                        total_loss_epoch += total_loss.item() * batch_weight
                         total_loss.backward()
                         optim.step()
 

@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..layers.activation import activation_layer
-from ..layers.core import Conv2dSame
+from ..layers.core import Conv2dSame, create_linear
 from ..layers.sequence import KMaxPooling
 
 
@@ -83,9 +83,11 @@ Tongwen](https://arxiv.org/pdf/1905.09433.pdf)
         self.filed_size = filed_size
         self.reduction_size = max(1, filed_size // reduction_ratio)
         self.excitation = nn.Sequential(
-            nn.Linear(self.filed_size, self.reduction_size, bias=False),
+            create_linear(self.filed_size, self.reduction_size, bias=False,
+                          initializer='glorot_normal', device=device),
             nn.ReLU(),
-            nn.Linear(self.reduction_size, self.filed_size, bias=False),
+            create_linear(self.reduction_size, self.filed_size, bias=False,
+                          initializer='glorot_normal', device=device),
             nn.ReLU()
         )
         self.to(device)
@@ -123,16 +125,19 @@ Tongwen](https://arxiv.org/pdf/1905.09433.pdf)
         self.seed = seed
         self.bilinear = nn.ModuleList()
         if self.bilinear_type == "all":
-            self.bilinear = nn.Linear(
-                embedding_size, embedding_size, bias=False)
+            self.bilinear = create_linear(
+                embedding_size, embedding_size, bias=False,
+                initializer='glorot_normal', device=device)
         elif self.bilinear_type == "each":
-            for _ in range(filed_size):
+            for _ in range(filed_size - 1):
                 self.bilinear.append(
-                    nn.Linear(embedding_size, embedding_size, bias=False))
+                    create_linear(embedding_size, embedding_size, bias=False,
+                                  initializer='glorot_normal', device=device))
         elif self.bilinear_type == "interaction":
             for _, _ in itertools.combinations(range(filed_size), 2):
                 self.bilinear.append(
-                    nn.Linear(embedding_size, embedding_size, bias=False))
+                    create_linear(embedding_size, embedding_size, bias=False,
+                                  initializer='glorot_normal', device=device))
         else:
             raise NotImplementedError
         self.to(device)
@@ -188,8 +193,10 @@ class CIN(nn.Module):
 
         self.conv1ds = nn.ModuleList()
         for i, size in enumerate(self.layer_size):
-            self.conv1ds.append(
-                nn.Conv1d(self.field_nums[-1] * self.field_nums[0], size, 1))
+            conv = nn.Conv1d(self.field_nums[-1] * self.field_nums[0], size, 1)
+            nn.init.xavier_uniform_(conv.weight)
+            nn.init.zeros_(conv.bias)
+            self.conv1ds.append(conv)
 
             if self.split_half:
                 if i != len(self.layer_size) - 1 and size % 2 > 0:
@@ -216,7 +223,7 @@ class CIN(nn.Module):
         for i, size in enumerate(self.layer_size):
             # x^(k-1) * x^0
             x = torch.einsum(
-                'bhd,bmd->bhmd', hidden_nn_layers[-1], hidden_nn_layers[0])
+                'bmd,bhd->bmhd', hidden_nn_layers[0], hidden_nn_layers[-1])
             # x.shape = (batch_size , hi * m, dim)
             x = x.reshape(
                 batch_size, hidden_nn_layers[-1].shape[1] * hidden_nn_layers[0].shape[1], dim)
@@ -340,26 +347,33 @@ class InteractingLayer(nn.Module):
             - [Song W, Shi C, Xiao Z, et al. AutoInt: Automatic Feature Interaction Learning via Self-Attentive Neural Networks[J]. arXiv preprint arXiv:1810.11921, 2018.](https://arxiv.org/abs/1810.11921)
     """
 
-    def __init__(self, embedding_size, head_num=2, use_res=True, scaling=False, seed=1024, device='cpu'):
+    def __init__(self, embedding_size, head_num=2, use_res=True, scaling=False,
+                 seed=1024, device='cpu', att_embedding_size=None):
         super(InteractingLayer, self).__init__()
         if head_num <= 0:
             raise ValueError('head_num must be a int > 0')
-        if embedding_size % head_num != 0:
+        if att_embedding_size is None and embedding_size % head_num != 0:
             raise ValueError('embedding_size is not an integer multiple of head_num!')
-        self.att_embedding_size = embedding_size // head_num
+        self.att_embedding_size = (
+            embedding_size // head_num
+            if att_embedding_size is None
+            else att_embedding_size
+        )
+        output_size = self.att_embedding_size * head_num
         self.head_num = head_num
         self.use_res = use_res
         self.scaling = scaling
         self.seed = seed
 
-        self.W_Query = nn.Parameter(torch.Tensor(embedding_size, embedding_size))
-        self.W_key = nn.Parameter(torch.Tensor(embedding_size, embedding_size))
-        self.W_Value = nn.Parameter(torch.Tensor(embedding_size, embedding_size))
+        self.W_Query = nn.Parameter(torch.Tensor(embedding_size, output_size))
+        self.W_key = nn.Parameter(torch.Tensor(embedding_size, output_size))
+        self.W_Value = nn.Parameter(torch.Tensor(embedding_size, output_size))
 
         if self.use_res:
-            self.W_Res = nn.Parameter(torch.Tensor(embedding_size, embedding_size))
+            self.W_Res = nn.Parameter(torch.Tensor(embedding_size, output_size))
         for tensor in self.parameters():
-            nn.init.normal_(tensor, mean=0.0, std=0.05)
+            nn.init.trunc_normal_(tensor, mean=0.0, std=0.05,
+                                  a=-0.1, b=0.1)
 
         self.to(device)
 
@@ -482,7 +496,10 @@ class CrossNetMix(nn.Module):
         self.V_list = nn.Parameter(torch.Tensor(self.layer_num, num_experts, in_features, low_rank))
         # C: (low_rank, low_rank)
         self.C_list = nn.Parameter(torch.Tensor(self.layer_num, num_experts, low_rank, low_rank))
-        self.gating = nn.ModuleList([nn.Linear(in_features, 1, bias=False) for i in range(self.num_experts)])
+        self.gating = nn.ModuleList([
+            create_linear(in_features, 1, bias=False, device=device)
+            for _ in range(self.num_experts)
+        ])
 
         self.bias = nn.Parameter(torch.Tensor(self.layer_num, in_features, 1))
 
@@ -530,7 +547,7 @@ class CrossNetMix(nn.Module):
             moe_out = torch.matmul(output_of_experts, gating_score_of_experts.softmax(1))
             x_l = moe_out + x_l  # (bs, in_features, 1)
 
-        x_l = x_l.squeeze()  # (bs, in_features)
+        x_l = x_l.squeeze(2)  # (bs, in_features)
         return x_l
 
 
